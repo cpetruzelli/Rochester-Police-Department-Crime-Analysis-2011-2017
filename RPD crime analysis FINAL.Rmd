@@ -1,0 +1,584 @@
+---
+title: "RPD Crime Analysis"
+author: "Charles Petruzelli"
+date: "January 31, 2018"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_packages, include = FALSE}
+# Add additional packages as needed to package_names. (I always include
+#  data.table, papaja, and tidyverse, so these are in my skeleton.Rmd.)
+c("data.table", "tidyverse", "dplyr", "leaflet", "spatstat", "lubridate", "ggmap", "maps", "forcats", "sp") -> package_names #packages that are needed(in alphabetical)
+for(package_name in package_names) {          #For every package name in the variable, do the following:
+  if(!is.element(package_name, installed.packages()[,1])) {      #If the package is not an element in the installed packages, then install the package.
+     install.packages(package_name, repos="http://lib.stat.cmu.edu/R/CRAN")
+  }
+  library(package_name, character.only=TRUE,quietly=TRUE,verbose=FALSE) #Library the package and remove the messages that appear
+}
+rm(list=c("package_names","package_name")) #Remove the two variables package_names and package_name to clean up clutter (variables only for bringing in new packages.)
+
+sessionInfo()  #Information about system and R and what packages are used that way everyone knows what you're using. 
+
+```
+
+
+```{r read data}
+##Read in data
+#crimes <- fread("P:/RPD.csv") #if at school
+crimes <- fread("D:/RPD.csv") #if at home
+##Look at data
+head(crimes)
+
+glimpse(crimes)
+
+summary(crimes)
+save(crimes, file = "RPD.Rdata")
+```
+
+
+```{r Cleaning Data}
+##Cleaning Data
+
+#Remove "Z" character at the end of the OccuredFrom_Timestamp variable.
+crimes <- separate(crimes, col = OccurredFrom_Timestamp, into = c("Date", "del"), sep = "Z")
+#Split this into two separate columns, date and time
+crimes <- separate(crimes, col = Date, into = c("date", "Time"), sep = "T")
+#Combine this back(This was just to remove the 'Z' that was between the date and the time)
+crimes$Date <- paste(crimes$date,crimes$Time)
+#Lubdridate the date variable
+crimes$date <- ymd(crimes$date)
+#This creates a separate column with the character string of the respective day of the week in which the incident occured
+crimes$DayOfWeek <- weekdays(as.Date(crimes$date,'%d-%m-%Y'))
+#Duplicate the date variable (just to be safe)
+crimes$date1 <- crimes$date
+#Create a separate column for month
+crimes$Month <- month(as.POSIXlt(crimes$date1, format="%d/%m/%Y"))
+#Create a separate column for year
+crimes$Year <- year(as.POSIXlt(crimes$date1, format="%d/%m/%Y"))
+#Create a separate column for day
+crimes$Day <- day(as.POSIXlt(crimes$date1, format="%d/%m/%Y"))
+#Duplicate time column
+crimes$time <- crimes$Time
+#split this new column into an hour column and a column to remove
+crimes <- separate(crimes, col = time, into = c("Hours", "remove"), sep = ":")
+#Change this new hour variable into a numeric.
+crimes$Hours <- as.numeric(crimes$Hours)
+
+#Changing names of Patrol_Section to District and Statute_Text to crime.category
+setnames(crimes, old = c("Patrol_Section", "Statute_Text"), new = c("District", "crime.category"))
+#Changing names of X and Y to Latitude and Longitude 
+setnames(crimes, old = c("X", "Y"), new = c("Latitude", "Longitude"))
+#Changing Geocode_Address to Adress
+setnames(crimes, old = c("Geocode_Address"), new = c("Address"))
+#Changing Address_City to City
+setnames(crimes, old = c("Address_City"), new = c("City"))
+
+#In the Statute_Category, replace "F" with "Felony"
+crimes$Statute_Category <- str_replace(crimes$Statute_Category, "F", "Felony")
+#In the Statute_Category, replace "M" with "Misdemeanor"
+crimes$Statute_Category <- str_replace(crimes$Statute_Category, "M", "Misdemeanor")
+
+#Change City to all capitals
+crimes$City <- toupper(crimes$City)
+
+#Remove variables that will not be used
+crimes$OBJECTID <- NULL
+crimes$Reported_Timestamp <- NULL
+crimes$Reported_Time <- NULL
+crimes$Reported_Date_Month <- NULL
+crimes$Reported_Date_Year <- NULL
+crimes$OccurredThrough_Timestamp <- NULL
+crimes$OccurredThrough_Time <- NULL
+crimes$OccurredThrough_Date_Month <- NULL
+crimes$OccurredThrough_Date_Year <- NULL
+crimes$del <- NULL
+crimes$Geocode_Street <- NULL
+crimes$remove <- NULL
+
+#2018 was removed because we only had a little over a month of data for the year. This would skew some of our results
+crimes <- crimes[which(Year != 2018)]
+#Remove any elements for which the district is not listed
+crimes <- crimes[which(District != "***")]
+
+str(crimes)
+summary(crimes)
+head(crimes)
+```
+
+
+```{r crimes per year}
+#95% confidence interval for crimes per year
+table(crimes$Year)
+samplemean <- mean(table(crimes$Year))
+sd = sd(table(crimes$Year))
+Confidence_Interval.min = samplemean - sd
+Confidence_Interval.min
+Confidence_Interval.max = samplemean + sd
+Confidence_Interval.max
+
+#Graph of crimes per year separated by felony and misdemeanor
+ggplot(data=crimes, aes(crimes$Year)) + 
+  geom_bar() +
+  labs(x = 'Year', y = 'Number of Offenses') +
+  ggtitle('Crimes Per Year in Rochester, NY (2011-2017)') +
+  theme_bw() +
+  geom_bar(aes(fill = Statute_Category)) +
+  scale_fill_manual(values=c("#D53817", "#4699dd")) +
+  scale_x_continuous(breaks=c(2011,2012,2013,2014,2015,2016,2017),labels=c("2011","2012","2013","2014","2015","2016","2017"))
+
+
+```
+
+```{r crimes per month}
+##Crimes Per Month
+#Create a table of incidents per month
+table(crimes$Month)
+#Add a new variable that puts the corresponding month name to the number
+crimes$MonthName <- factor(x = crimes$Month, 
+                        labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul" ,"Aug" ,"Sep" , "Oct", "Nov", "Dec"),
+                        ordered = T)
+
+#Graph of offenses per month separated by felony and misdemeanor
+crimespermonth <- ggplot(data=crimes, aes(crimes$MonthName)) + 
+  geom_bar() +
+  labs(x = 'Month', y = 'Number of Offenses') +
+  ggtitle('Crimes Per Month in Rochester, NY (2011-2017') +
+  theme_bw() +
+  geom_bar(aes(fill = Statute_Category)) +
+  scale_fill_manual(values=c("#D53817", "#4699dd"))
+crimespermonth
+crimespermonth + facet_wrap(~crime.category,scale='free')
+crimespermonth + facet_wrap(~Year,scale='free')
+
+#Plot to visualize the different types of crime and their number of offenses per month.
+ggplot(data = crimes, aes(x = MonthName, color = crime.category, group = crime.category)) +
+    theme_bw() +
+    geom_line(stat = "count", size = 1) +
+    ggtitle("Crimes by Month by Crime Type in Rochester, NY (Jan. 2011 - Dec. 2017)") +
+    xlab(NULL) +
+    ylab("Crime Count")
+
+ggplot(data = crimes, aes(x = MonthName, color = crime.category, group = crime.category)) +
+    theme_bw() +
+    geom_line(stat = "count", size = 1) +
+    ggtitle("Crimes by Month - Categories") +
+    xlab(NULL) +
+    ylab("Crime Count")+
+    facet_wrap(~Year,scale='free')
+```
+
+
+```{r time of day}
+#Crimes by time of day detailing felonies vs misdemeanors
+crime_time<-crimes %>%  ggplot(aes(x=as.numeric(Hours))) + geom_bar()  + labs(x='Time of Day',y="Number of Offenses") + 
+  scale_x_continuous(breaks=c(3,9,12,15,21),labels=c("3am","9am","Noon","3pm","9pm")) +
+  geom_bar(aes(fill = Statute_Category)) +
+  scale_fill_manual(values=c("#D53817", "#4699dd"))
+crime_time
+#Facets
+crime_time + facet_wrap(~Year,scale='free') + ggtitle("Crimes by Time of Day - Divided by Year") 
+crime_time + facet_wrap(~crime.category,scale='free') + ggtitle("Crimes by Time of Day - Divided by Crime Category") 
+#Fixing axis format
+crime_time + facet_wrap(~crime.category,scale='free') +
+  scale_x_continuous(breaks=c(3,9,15,21),labels=c("3am","9am","3pm","9pm"))+ ggtitle("Crimes by Time of Day - Divided by Crime Category") 
+
+
+ggplot(data = crimes, aes(x = Hours, color = crime.category, group = crime.category)) +
+    theme_bw() +
+    geom_line(stat = "count", size = 1) +
+    ggtitle("Crimes by Time of Day Grouped by Crime Type in Rochester, NY (2011 - 2017)") +
+    xlab(NULL) +
+    ylab("Crime Count") +
+    scale_x_continuous(breaks=c(3,9,12,15,21),labels=c("3am","9am","Noon","3pm","9pm"))
+```
+
+
+```{r larceny by time}
+##Larceny appears to be the highest commited crime by volume, so we will analyze this further.
+#filter by larceny
+larceny_offenses <- crimes %>% 
+  filter(crime.category=="Larceny") %>% 
+  mutate(Day=wday(date1,label=TRUE))
+
+#Larceny offenses by day of week
+larceny_offenses %>% 
+  ggplot(aes(x=Day)) + 
+  geom_bar() + labs(y='Number of Larceny Offenses',x='Day of Week') +
+  geom_bar(aes(fill = Statute_Category)) +
+  scale_fill_manual(values=c("#D53817", "#4699dd"))
+
+#Larceny offenses by time of day
+larceny_times <- larceny_offenses %>% 
+  ggplot(aes(x=as.numeric(Hours))) + 
+  geom_bar() + labs(y='Number of Larceny Offenses',x='Time of Day') + 
+  scale_x_continuous(breaks=c(3,9,15,21),labels=c("3am","9am","3pm","9pm")) +
+  geom_bar(aes(fill = Statute_Category)) +
+  scale_fill_manual(values=c("#D53817", "#4699dd"))
+larceny_times
+
+larceny_times + facet_wrap(~DayOfWeek) 
+
+larceny_times + facet_wrap(~DayOfWeek,nrow=2) + coord_polar(start=-pi/24)
+```
+
+
+```{r summary statistics}
+## Summary statistics ##
+# Frequency of crime by district (in descending order)
+count(crimes, District, sort = TRUE)
+
+crimes <- crimes %>% mutate(District = fct_infreq(District))
+
+ggplot(data=crimes, aes(crimes$District)) + 
+  geom_bar() +
+  labs(x = 'District', y = 'Count') +
+  ggtitle('Crime Incidents by District in Rochester, NY (January 2011 - December 2017)') +
+  geom_bar(aes(fill = Statute_Category)) +
+  scale_fill_manual(values=c("#D53817", "#4699dd")) +
+  theme_bw()
+
+
+# Frequency of crime category (crime.category)(in descending order)
+count(crimes, crime.category, sort = TRUE)
+
+crimes <- crimes %>% mutate(crime.category = fct_infreq(crime.category))
+
+ggplot(data=crimes, aes(crimes$crime.category)) + 
+  geom_bar() +
+  labs(x = 'Crime Category', y = 'Count') +
+  ggtitle('Crime Incidents by Crime Category in Rochester, NY (Jan. 2011 - Dec. 2017)') +
+  theme_bw() +
+  geom_bar(aes(fill = Statute_Category)) +
+  scale_fill_manual(values=c("#D53817", "#4699dd")) +
+  theme_bw()
+
+
+# Frequency and percent of crime category (in descending order)
+count(crimes, crime.category, sort = TRUE) %>%
+  mutate(percent = round(n/sum(n)*100, 1))
+
+# Frequency of crime category by district (in descending order)
+crimes %>%
+  group_by(crime.category, District) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n)) 
+
+# Mean frequency of crime category per district
+crimes %>%
+  group_by(District, crime.category) %>%
+  summarise(total = n()) %>% 
+  group_by(crime.category) %>% 
+  summarise(average = round(mean(total, na.rm=TRUE), 0))
+
+# Frequency and percent of larceny crime by district (in descending order)
+crimes %>% 
+  filter(crime.category == "Larceny") %>% 
+  group_by(District) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  mutate(percent = round(n/sum(n)*100, 1))
+```
+
+
+```{r frequencies and percentages}
+## The 80-20 rule ##
+# A small proportion of places, offenders, victims, and property account for most of the crime.
+
+# Calculate cumulative frequencies and percentages for Larceny
+tbl <- crimes %>% 
+  filter(crime.category == "Larceny") %>% 
+  group_by(District) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  mutate(percent.crimes = round(n/sum(n)*100, 1),
+         cum.percent.crimes = round(cumsum(percent.crimes), 1),
+         percent.District = 1/n()*100,
+         cum.percent.District = round(cumsum(percent.District), 1)) %>% 
+  select(Districtn = District,
+         `No. crimes` = n,
+         `% crimes` = percent.crimes,
+         `Cum. % crimes` = cum.percent.crimes,
+         `Cum. % District` = cum.percent.District)
+tbl
+
+```
+
+
+```{r repeat locations}
+## Repeat locations ##
+
+# Identify repeat locations for Larceny offences
+crimes %>% 
+  filter(crime.category == "Larceny") %>% 
+  group_by(Latitude, Longitude, District) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n))
+
+# Plot the top 10 repeat locations using the leaflet package
+rpt_locs <- crimes %>% 
+  filter(crime.category == "Larceny") %>% 
+  group_by(Latitude, Longitude, Address_StreetFull, District) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>% 
+  slice(1:10)
+
+popup <- paste0("<strong>Frequency: </strong>", rpt_locs$n,
+                "<br><strong>Address_StreetFull: </strong>", rpt_locs$Address_StreetFull,
+                "<br><strong>District: </strong>", rpt_locs$District)
+
+leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>% 
+  addCircleMarkers(data = rpt_locs, 
+                   ~Latitude, ~Longitude, 
+                   fillColor = "black", color = "red",  
+                   radius = ~n*.01, # this may need to be controlled e.g. radius = ~n*0.1
+                   popup = ~popup) 
+
+
+
+# Identify repeat locations for Murder offences
+crimes %>% 
+  filter(crime.category == "Murder") %>% 
+  group_by(Latitude, Longitude, District) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n))
+
+# Plot the top 10 repeat locations using the leaflet package
+rpt_locs <- crimes %>% 
+  filter(crime.category == "Burglary") %>% 
+  group_by(Latitude, Longitude, Address_StreetFull, District) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>% 
+  slice(1:10)
+
+popup <- paste0("<strong>Frequency: </strong>", rpt_locs$n,
+                "<br><strong>Address_StreetFull: </strong>", rpt_locs$Address_StreetFull,
+                "<br><strong>District: </strong>", rpt_locs$District)
+
+leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>% 
+  addCircleMarkers(data = rpt_locs, 
+                   ~Latitude, ~Longitude, 
+                   fillColor = "black", color = "red",  
+                   radius = ~n*.5, # this may need to be controlled e.g. radius = ~n*0.1
+                   popup = ~popup) 
+```
+
+
+```{r crime rate calculation}
+#CRIME RATE - A crime rate describes the number of crimes reported to law enforcement agencies per 100,000 total population. A crime rate is calculated by dividing the number of reported crimes by the total population; the result is multiplied by 100,000. (OAG.CA.GOV)
+#We will calculate our rates using 2017 crime data
+table(crimes$crime.category, crimes$Year)
+#Rochester Population as of 2016 is 208,880
+pop <- 208880
+#Larceny Rate
+larc <- 5953
+larceny_rate <- (larc/pop) * 1000
+larceny_rate
+#Burglary Rate
+burg <- 1322
+burglary_rate <- (burg/pop) * 1000
+burglary_rate
+#Aggravated Assault Rate
+assault <- 889
+assault_rate <- (assault/pop) * 1000
+assault_rate
+#Robbery Rate
+robbery <- 723
+robbery_rate <- (robbery/pop) * 1000
+robbery_rate
+#Motor Vehicle Theft Rate
+mvt <- 546
+mvt_rate <- (mvt/pop) * 1000
+mvt_rate
+#Murder Rate
+murder <- 28
+murder_rate <- (assault/pop) * 1000
+murder_rate
+#Not-Negligent Manslaughter Rate
+nnm <- 1
+nnm_rate <- (nnm/pop) * 1000
+nnm_rate
+```
+
+
+```{r map with points}
+crimes$Latitude <-as.numeric(crimes$Latitude)
+crimes$Longitude <-as.numeric(crimes$Longitude)
+
+map.roc <- qmap("rochester", zoom = 12, source="stamen", maptype="toner",darken = c(.3,"#BBBBBB"))
+
+map.roc +
+  geom_point(data=crimes, aes(x=Latitude, y=Longitude), color="dark green", alpha=.03, size=1.1)
+```
+
+
+```{r heat map}
+#Get a map of rochester
+rochester_map <- get_map(location = "rochester", zoom = 12)
+ggmap(rochester_map)
+#Plot the first 100 points (if we plotted them all, it would just look like a giant black mass)
+ggmap(rochester_map) + geom_point(data = crimes[1:100,], aes(x = Latitude, y = Longitude))
+#We're interested in whether or not an area has a high amount of crome, so we round our latitude and longitude to two digits of accuracy and create a crime counts data frame for each area
+LatLonCounts <- as.data.frame(table(round(crimes$Longitude,2), round(crimes$Latitude,2)))
+str(LatLonCounts)
+#Converting our new variables to numbers
+LatLonCounts$Long <- as.numeric(as.character(LatLonCounts$Var2))
+LatLonCounts$Lat <- as.numeric(as.character(LatLonCounts$Var1))
+#Plotting the points on our map, making the size and color of the points depend on the total number of indidents
+ggmap(rochester_map) + geom_point(data = LatLonCounts, aes(x = Long, y = Lat, color = Freq, size = Freq))
+#Change color scheme to red/orange/yellow
+ggmap(rochester_map) + geom_point(data = LatLonCounts, aes(x = Long, y = Lat, color = Freq, size = Freq)) + scale_color_gradient(low = "yellow", high = "red")
+#create heatmap
+ggmap(rochester_map) + geom_tile(data = LatLonCounts, aes(x = Long, y = Lat, alpha = Freq), fill = "red")
+#Remove observations from our data frame that show no incidents to remove weird color issue
+LatLonCounts2 <- subset(LatLonCounts, Freq > 0)
+ggmap(rochester_map) + geom_tile(data = LatLonCounts2, aes(x = Long, y = Lat, alpha = Freq), fill = "red") +
+labs(x = 'Longitude', y = 'Latitude') +
+  ggtitle('Heatmap of Crime Frequency in Rochester, NY (2011-2017)')
+
+```
+
+
+```{r other data}
+shootings <- fread("D:/shootings.csv") #shooting
+save(shootings, file = "shootings.Rdata")
+```
+
+
+```{r Cleaning shootings}
+##Cleaning Data
+
+#Remove "Z" character at the end of the OccuredFrom_Timestamp variable.
+shootings <- separate(shootings, col = Occurred_Date, into = c("Date", "del"), sep = "Z")
+#Split this into two separate columns, date and time
+shootings <- separate(shootings, col = Date, into = c("date", "Time"), sep = "T")
+#Combine this back(This was just to remove the 'Z' that was between the date and the time)
+shootings$Date <- paste(shootings$date,shootings$Time)
+#Lubdridate the date variable
+shootings$date <- ymd(shootings$date)
+#This creates a separate column with the character string of the respective day of the week in which the incident occured
+shootings$DayOfWeek <- weekdays(as.Date(shootings$date,'%d-%m-%Y'))
+#Duplicate the date variable (just to be safe)
+shootings$date1 <- shootings$date
+#Create a separate column for month
+shootings$Month <- month(as.POSIXlt(shootings$date1, format="%d/%m/%Y"))
+#Create a separate column for year
+shootings$Year <- year(as.POSIXlt(shootings$date1, format="%d/%m/%Y"))
+#Create a separate column for day
+shootings$Day <- day(as.POSIXlt(shootings$date1, format="%d/%m/%Y"))
+#Duplicate time column
+shootings$time <- shootings$Time
+#split this new column into an hour column and a column to remove
+shootings <- separate(shootings, col = time, into = c("Hours", "remove"), sep = ":")
+#Change this new hour variable into a numeric.
+shootings$Hours <- as.numeric(shootings$Hours)
+
+#Changing names of X and Y to Latitude and Longitude 
+setnames(shootings, old = c("X", "Y"), new = c("Latitude", "Longitude"))
+
+
+#Remove variables that will not be used
+shootings$ObjectID <- NULL
+shootings$ID <- NULL
+shootings$Case_Number <- NULL
+shootings$del <- NULL
+shootings$Occurred_Month <- NULL
+shootings$Occurred_Year <- NULL
+shootings$remove <- NULL
+
+shootings <- shootings[which(Race != "N")]
+
+str(shootings)
+summary(shootings)
+head(shootings)
+```
+
+
+```{r shootings per year}
+##Shootings per year
+table(shootings$Year)
+#Graph of shootings per year separated by shooting and homicide
+ggplot(data=shootings, aes(shootings$Year)) + 
+  geom_bar() +
+  labs(x = 'Year', y = 'Number of Offenses') +
+  ggtitle('Shootings Per Year in Rochester, NY (2000-2018)') +
+  theme_bw() +
+  geom_bar(aes(fill = Crime_Type)) +
+  scale_fill_manual(values=c("#DF013A", "#3373CB"))
+```
+
+```{r shootings per month}
+##Shootings Per Month
+#Create a table of incidents per month
+table(shootings$Month)
+#Add a new variable that puts the corresponding month name to the number
+shootings$MonthName <- factor(x = shootings$Month, 
+                        labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul" ,"Aug" ,"Sep" , "Oct", "Nov", "Dec"),
+                        ordered = T)
+
+#Graph of offenses per month separated by shooting and homicide
+shootingspermonth <- ggplot(data=shootings, aes(shootings$MonthName)) + 
+  geom_bar() +
+  labs(x = 'Month', y = 'Number of Offenses') +
+  ggtitle('Shootings Per Month in Rochester, NY (2011-2017') +
+  theme_bw() +
+  geom_bar(aes(fill = Crime_Type)) +
+  scale_fill_manual(values=c("#DF013A", "#3373CB"))
+shootingspermonth
+```
+
+
+```{r shooting time of day}
+#Shootings by time of day detailing shootings vs homicide
+shooting_time<-shootings %>%  ggplot(aes(x=as.numeric(Hours))) + geom_bar()  + labs(x='Time of Day',y="Number of Offenses") + 
+  scale_x_continuous(breaks=c(3,9,12,15,21),labels=c("3am","9am","Noon","3pm","9pm")) +
+  geom_bar(aes(fill = Crime_Type)) +
+  scale_fill_manual(values=c("#DF013A", "#3373CB")) +
+  theme_bw()
+shooting_time
+
+```
+
+
+```{r shooting heatmap}
+#Using the map from before
+ggmap(rochester_map) + geom_point(data = shootings, aes(x = Latitude, y = Longitude))
+#We're interested in whether or not an area has a high amount of crome, so we round our latitude and longitude to two digits of accuracy and create a crime counts data frame for each area
+LatLonCounts <- as.data.frame(table(round(shootings$Longitude,2), round(shootings$Latitude,2)))
+str(LatLonCounts)
+#Converting our new variables to numbers
+LatLonCounts$Long <- as.numeric(as.character(LatLonCounts$Var2))
+LatLonCounts$Lat <- as.numeric(as.character(LatLonCounts$Var1))
+#Plotting the points on our map, making the size and color of the points depend on the total number of indidents
+ggmap(rochester_map) + geom_point(data = LatLonCounts, aes(x = Long, y = Lat, color = Freq, size = Freq))
+#Change color scheme to red/orange/yellow
+ggmap(rochester_map) + geom_point(data = LatLonCounts, aes(x = Long, y = Lat, color = Freq, size = Freq)) + scale_color_gradient(low = "yellow", high = "red")
+#create heatmap
+ggmap(rochester_map) + geom_tile(data = LatLonCounts, aes(x = Long, y = Lat, alpha = Freq), fill = "red")
+#Remove observations from our data frame that show no incidents to remove weird color issue
+LatLonCounts2 <- subset(LatLonCounts, Freq > 0)
+ggmap(rochester_map) + geom_tile(data = LatLonCounts2, aes(x = Long, y = Lat, alpha = Freq), fill = "red") +
+labs(x = 'Longitude', y = 'Latitude') +
+  ggtitle('Heatmap of Shooting Frequency in Rochester, NY (2000-Present)')
+```
+
+
+
